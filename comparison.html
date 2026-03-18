@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AtLink Services - BSL Rebaseline vs Original HUBB (CAF II)</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.1/MarkerCluster.min.css" />
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.1/MarkerCluster.Default.min.css" />
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:"Segoe UI",Tahoma,Geneva,Verdana,sans-serif;height:100vh;overflow:hidden}
+#header{background:linear-gradient(135deg,#1e3a5f 0%,#2c5aa0 100%);color:white;padding:15px 20px;box-shadow:0 2px 8px rgba(0,0,0,0.15);z-index:100}
+#header h1{font-size:22px;font-weight:600;letter-spacing:0.5px}
+#map{height:calc(100vh - 56px);width:100%}
+.legend{background:white;padding:12px 15px;border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,0.15);font-size:12px;max-width:230px}
+.legend-item{display:flex;align-items:center;margin:5px 0}
+.legend-color{width:14px;height:14px;border-radius:50%;margin-right:8px;flex-shrink:0}
+.legend-label{flex:1;color:#444}
+.legend-count{font-weight:700;color:#222;margin-left:6px}
+.control-group{background:white;padding:10px 14px;border-radius:4px;box-shadow:0 2px 4px rgba(0,0,0,0.1)}
+.control-group label{font-weight:600;font-size:13px;color:#333;margin-right:8px}
+#sacFilter{padding:5px 8px;border:1px solid #ddd;border-radius:3px;font-size:13px;cursor:pointer}
+.loader{position:fixed;top:56px;left:0;right:0;background:rgba(0,0,0,0.85);color:white;padding:8px 20px;z-index:999;font-size:14px;text-align:center;display:none}
+.loader.active{display:block}
+.popup-title{font-weight:700;font-size:14px;margin-bottom:6px;color:#1a5276;border-bottom:2px solid #2196F3;padding-bottom:4px}
+.popup-row{display:flex;justify-content:space-between;margin:3px 0;font-size:12px}
+.popup-label{color:#666;font-weight:500}
+.popup-value{color:#222;font-weight:600}
+.layer-toggle{margin-top:6px;padding-top:6px;border-top:1px solid #ddd}
+.layer-toggle label{display:block;margin:3px 0;cursor:pointer;font-weight:500;font-size:11px}
+.layer-toggle input{margin-right:5px}
+</style>
+</head>
+<body>
+<div id="header"><h1>AtLink Services &#8211; BSL Rebaseline vs Original HUBB (CAF II)</h1></div>
+<div id="map"></div>
+<div class="loader active" id="loader">Initializing map...</div>
+<iframe id="cafFrame" style="display:none"></iframe>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.1/leaflet.markercluster.min.js"></script>
+<script>
+(function(){
+    var map = L.map('map').setView([35.5, -96.2], 7);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap', maxZoom: 19
+    }).addTo(map);
+
+    var layers = {
+        '439077': L.markerClusterGroup(),
+        '439090': L.markerClusterGroup(),
+        'hubb': L.markerClusterGroup()
+    };
+    var SAC_COLORS = {'439077': '#2196F3', '439090': '#FF9800'};
+    var bslStats = {total: 0, '439077': 0, '439090': 0};
+    var hubbLoaded = false, hubbCount = 0;
+    var loader = document.getElementById('loader');
+    var legendContainer = null;
+
+    loader.textContent = 'Loading BSL data...';
+    fetch('bsl-map.html')
+    .then(function(r){ return r.text(); })
+    .then(function(html){
+        var pattern = /\['(43907[07]|43909[0])',([\d.-]+),([\d.-]+),'([^']*)','([^']*)','([^']*)','([^']*)'\]/g;
+        var match, bslData = [];
+        while ((match = pattern.exec(html)) !== null) {
+            bslData.push([match[1], parseFloat(match[2]), parseFloat(match[3]), match[4], match[5], match[6], match[7]]);
+        }
+
+        if (bslData.length === 0) {
+            loader.textContent = 'Error: Could not parse BSL data. Trying alternate pattern...';
+            var p2 = /\['(\d{6})',([\d.-]+),([\d.-]+),'([^']*?)','([^']*?)','(\d+)','(\d+)'\]/g;
+            while ((match = p2.exec(html)) !== null) {
+                bslData.push([match[1], parseFloat(match[2]), parseFloat(match[3]), match[4], match[5], match[6], match[7]]);
+            }
+        }
+
+        console.log('Parsed ' + bslData.length + ' BSL locations');
+        loader.textContent = 'Adding ' + bslData.length.toLocaleString() + ' BSL markers...';
+
+        bslData.forEach(function(r){
+            var sac=r[0], lat=r[1], lng=r[2], addr=r[3], city=r[4], zip=r[5], cid=r[6];
+            bslStats[sac] = (bslStats[sac]||0) + 1;
+            bslStats.total++;
+            var popup = '<div class="popup-title">' + addr + '</div>'
+                + '<div class="popup-row"><span class="popup-label">City:</span><span class="popup-value">' + city + ', OK ' + zip + '</span></div>'
+                + '<div class="popup-row"><span class="popup-label">SAC:</span><span class="popup-value">' + sac + '</span></div>'
+                + '<div class="popup-row"><span class="popup-label">Carrier ID:</span><span class="popup-value">' + cid + '</span></div>'
+                + '<div class="popup-row"><span class="popup-label">Dataset:</span><span class="popup-value" style="color:#4caf50;font-weight:700">New BSL (CostQuest)</span></div>';
+            var m = L.circleMarker([lat, lng], {
+                radius: 5, fillColor: SAC_COLORS[sac], color: SAC_COLORS[sac],
+                weight: 1, opacity: 0.8, fillOpacity: 0.7
+            }).bindPopup(popup);
+            layers[sac].addLayer(m);
+        });
+
+        layers['439077'].addTo(map);
+        layers['439090'].addTo(map);
+
+        if (bslData.length > 0) {
+            var bounds = L.latLngBounds(bslData.map(function(r){ return [r[1], r[2]]; }));
+            map.fitBounds(bounds, {padding: [50, 50]});
+        }
+
+        addControls();
+        buildLegend();
+        loader.textContent = 'BSL loaded (' + bslData.length.toLocaleString() + '). Loading original HUBB...';
+        loadHubb();
+    })
+    .catch(function(err){
+        console.error('BSL load failed:', err);
+        loader.textContent = 'Failed to load BSL data: ' + err.message;
+    });
+
+    function loadHubb() {
+        var iframe = document.getElementById('cafFrame');
+        var timeout = setTimeout(function(){
+            loader.textContent = 'HUBB load timed out. Showing BSL only.';
+            setTimeout(function(){ loader.className = 'loader'; }, 4000);
+        }, 45000);
+
+        iframe.onload = function(){
+            setTimeout(function(){
+                try {
+                    var markers = iframe.contentWindow.allMarkers;
+                    if (markers && markers.length > 0) {
+                        clearTimeout(timeout);
+                        hubbCount = markers.length;
+                        loader.textContent = 'Adding ' + hubbCount.toLocaleString() + ' original HUBB markers...';
+
+                        markers.forEach(function(mk){
+                            var popup = '<div class="popup-title">Original HUBB Location</div>'
+                                + '<div class="popup-row"><span class="popup-label">SAC:</span><span class="popup-value">' + mk.s + '</span></div>'
+                                + '<div class="popup-row"><span class="popup-label">Coords:</span><span class="popup-value">' + mk.lat.toFixed(5) + ', ' + mk.lng.toFixed(5) + '</span></div>'
+                                + '<div class="popup-row"><span class="popup-label">Dataset:</span><span class="popup-value" style="color:#E53935;font-weight:700">Original HUBB</span></div>';
+                            var m = L.circleMarker([mk.lat, mk.lng], {
+                                radius: 3, fillColor: '#E53935', color: '#E53935',
+                                weight: 1, opacity: 0.6, fillOpacity: 0.4
+                            }).bindPopup(popup);
+                            layers['hubb'].addLayer(m);
+                        });
+
+                        layers['hubb'].addTo(map);
+                        hubbLoaded = true;
+                        buildLegend();
+                        loader.textContent = 'Loaded ' + bslStats.total.toLocaleString() + ' BSL + ' + hubbCount.toLocaleString() + ' HUBB locations';
+                        setTimeout(function(){ loader.className = 'loader'; }, 3000);
+                    } else {
+                        clearTimeout(timeout);
+                        setTimeout(function(){
+                            try {
+                                var m2 = iframe.contentWindow.allMarkers;
+                                if (m2 && m2.length > 0) {
+                                    hubbCount = m2.length;
+                                    m2.forEach(function(mk){
+                                        var m = L.circleMarker([mk.lat, mk.lng], {
+                                            radius: 3, fillColor: '#E53935', color: '#E53935',
+                                            weight: 1, opacity: 0.6, fillOpacity: 0.4
+                                        });
+                                        layers['hubb'].addLayer(m);
+                                    });
+                                    layers['hubb'].addTo(map);
+                                    hubbLoaded = true;
+                                    buildLegend();
+                                    loader.textContent = 'Loaded ' + hubbCount.toLocaleString() + ' HUBB (retry)';
+                                } else {
+                                    loader.textContent = 'HUBB markers empty. Showing BSL only.';
+                                }
+                            } catch(e2) {
+                                loader.textContent = 'HUBB access error. Showing BSL only.';
+                            }
+                            setTimeout(function(){ loader.className = 'loader'; }, 4000);
+                        }, 5000);
+                    }
+                } catch(err) {
+                    clearTimeout(timeout);
+                    console.error('HUBB iframe error:', err);
+                    loader.textContent = 'Cannot access HUBB data: ' + err.message;
+                    setTimeout(function(){ loader.className = 'loader'; }, 4000);
+                }
+            }, 3000);
+        };
+
+        iframe.onerror = function(){
+            clearTimeout(timeout);
+            loader.textContent = 'Failed to load caf-map iframe. Showing BSL only.';
+            setTimeout(function(){ loader.className = 'loader'; }, 4000);
+        };
+
+        iframe.src = 'https://samualcurtis-ux.github.io/caf-map/';
+    }
+
+    function addControls() {
+        var ctrl = L.control({position: 'topright'});
+        ctrl.onAdd = function(){
+            var div = L.DomUtil.create('div', 'control-group');
+            var lbl = L.DomUtil.create('label', '', div);
+            lbl.textContent = 'Filter BSL:';
+            var sel = L.DomUtil.create('select', '', div);
+            sel.id = 'sacFilter';
+            sel.innerHTML = '<option value="all">All BSL (' + bslStats.total.toLocaleString() + ')</option>'
+                + '<option value="439077">SAC 439077 (' + bslStats['439077'].toLocaleString() + ')</option>'
+                + '<option value="439090">SAC 439090 (' + bslStats['439090'].toLocaleString() + ')</option>';
+            L.DomEvent.disableClickPropagation(div);
+            sel.addEventListener('change', function(e){
+                var v = e.target.value;
+                try{map.removeLayer(layers['439077']);}catch(x){}
+                try{map.removeLayer(layers['439090']);}catch(x){}
+                if(v==='all'){layers['439077'].addTo(map);layers['439090'].addTo(map);}
+                else{layers[v].addTo(map);}
+            });
+            return div;
+        };
+        ctrl.addTo(map);
+    }
+
+    function buildLegend() {
+        if (!legendContainer) {
+            var lc = L.control({position: 'bottomright'});
+            lc.onAdd = function(){
+                legendContainer = L.DomUtil.create('div', 'legend');
+                L.DomEvent.disableClickPropagation(legendContainer);
+                renderLegend();
+                return legendContainer;
+            };
+            lc.addTo(map);
+        } else {
+            renderLegend();
+        }
+    }
+
+    function renderLegend() {
+        if (!legendContainer) return;
+        var h = '<div style="font-weight:700;margin-bottom:8px;font-size:13px">New BSL Dataset (CostQuest)</div>'
+            + '<div class="legend-item"><div class="legend-color" style="background:#2196F3"></div><span class="legend-label">SAC 439077</span><span class="legend-count">' + bslStats['439077'].toLocaleString() + '</span></div>'
+            + '<div class="legend-item"><div class="legend-color" style="background:#FF9800"></div><span class="legend-label">SAC 439090</span><span class="legend-count">' + bslStats['439090'].toLocaleString() + '</span></div>'
+            + '<div style="border-top:1px solid #ddd;padding-top:8px;margin-top:8px;font-weight:600;color:#333">BSL Total: ' + bslStats.total.toLocaleString() + '</div>';
+
+        if (hubbLoaded) {
+            var net = bslStats.total - hubbCount;
+            h += '<div style="font-weight:700;margin-top:12px;margin-bottom:8px;font-size:13px">Original HUBB Dataset</div>'
+                + '<div class="legend-item"><div class="legend-color" style="background:#E53935"></div><span class="legend-label">All Original</span><span class="legend-count">' + hubbCount.toLocaleString() + '</span></div>'
+                + '<div style="border-top:1px solid #ddd;padding-top:8px;margin-top:8px;font-weight:600;color:#333">HUBB Total: ' + hubbCount.toLocaleString() + '</div>'
+                + '<div style="border-top:1px solid #ddd;padding-top:8px;margin-top:8px;font-weight:700;color:' + (net<0?'#e53935':'#4caf50') + '">Net Change: ' + (net>0?'+':'') + net.toLocaleString() + '</div>'
+                + '<div class="layer-toggle"><label><input type="checkbox" id="hubbToggle" checked> Show Original HUBB</label></div>';
+        } else {
+            h += '<div style="border-top:1px solid #ddd;padding-top:8px;margin-top:8px;color:#999;font-size:11px">Original HUBB: Loading...</div>';
+        }
+        legendContainer.innerHTML = h;
+
+        var tog = document.getElementById('hubbToggle');
+        if (tog) {
+            tog.addEventListener('change', function(e){
+                if(e.target.checked){layers['hubb'].addTo(map);}
+                else{try{map.removeLayer(layers['hubb']);}catch(x){}}
+            });
+        }
+    }
+})();
+</script>
+</body>
+</html>
